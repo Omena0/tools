@@ -33,4 +33,4 @@ Delete the project
 $ proj rm tools2
 ```
 
-# More tools coming soon™️: frfr
+# More tools coming soon™ frfr
