@@ -5,7 +5,7 @@ Some tools that I've made for personal use.
 
 I'll still write docs so yall can use it too.
 
-## Proj
+# [<ins>proj</ins>](https://github.com/Omena0/tools/raw/refs/heads/main/dist/proj.exe "Click to download")
 
 A tool to manage git repositories for your projects.
 
