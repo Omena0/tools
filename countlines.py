@@ -15,7 +15,10 @@ def matches(path, gitignore: list):
             return True
     return False
 
-def countlines(dir, ignore=['.*']): # By default ignore dotfiles
+def countlines(dir, ignore=None) -> dict: # By default ignore dotfiles
+    if ignore is None:
+        ignore = ['.*']
+
     if os.path.exists(os.path.join(dir,'.gitignore')):
         with open(os.path.join(dir,'.gitignore'), 'r') as f:
             for line in f.read().splitlines():
@@ -44,11 +47,7 @@ def countlines(dir, ignore=['.*']): # By default ignore dotfiles
     return result
 
 if __name__ == '__main__':
-    if len(sys.argv) == 1:
-        dir = '.'
-    else:
-        dir = sys.argv[1]
-
+    dir = '.' if len(sys.argv) == 1 else sys.argv[1]
     lines = countlines(dir)
     lines = sorted(lines.items(), key=lambda x: x[1], reverse=True)
     max_length = len(lines[0][0]) if lines else 0

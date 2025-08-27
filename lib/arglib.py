@@ -97,31 +97,26 @@ class Arg:
                     self.value = args[i+1]
                     break
 
-            # Flag
             elif arg.startswith('-') and self.type == 'flag':
                 # Match multiple
-                if self.count > 1:
-                    if arg in self.match:
-                        self.value = True
-                        break
-
-                # Match single
-                elif arg == self.match:
+                if (
+                    self.count > 1
+                    and arg in self.match
+                    or self.count <= 1
+                    and arg == self.match
+                ):
                     self.value = True
                     break
 
-            # Positional
             elif self.type == 'positional':
-                if self.count > 1:
-                    if self.pos == i and arg in self.match:
+                if self.pos == i:
+                    if arg in self.match and self.count > 1:
                         self.value = arg
                         break
 
-                if self.pos == i:
                     self.value = arg
                     break
 
-            # Invalid
             else:
                 return False
 
@@ -131,11 +126,9 @@ class Arg:
 def parse():
     parsed = {}
     for arg in _args:
-        value = arg._parse(args)
-        if value:
-            parsed.update(value)
+        if value := arg._parse(args):
+            parsed |= value
 
-    if not parsed:
-        return False
+    return parsed or False
 
-    return parsed
+
