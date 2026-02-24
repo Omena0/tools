@@ -23,3 +23,7 @@ and sorts them from highest to lowest.
 Ignores dotfiles
 
 Usage: `countlines <[path]='.'>`
+
+## mv and cp
+
+Reimplementation of the coreutils with multithreading and a progress bar
