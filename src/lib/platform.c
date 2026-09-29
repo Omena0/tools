@@ -43,6 +43,13 @@
   #include <pthread.h>
   #include <time.h>
   #include <sys/ioctl.h>
+  #include <fcntl.h>
+  #include <sys/uio.h>
+
+  /* FICLONE may not be defined on older systems */
+  #ifndef FICLONE
+  #define FICLONE _IOW(0x94, 9, int)
+  #endif
 
   #define PLAT_WINDOWS 0
   #define PLAT_UNIX    1
@@ -175,6 +182,28 @@ static int plat_is_file(const char *path) {
 #ifdef _WIN32
     return (st.st_mode & _S_IFREG) != 0;
 #else
+    return S_ISREG(st.st_mode);
+#endif
+}
+
+/* Like plat_is_dir but does NOT follow symlinks (uses lstat). */
+static int plat_lstat_is_dir(const char *path) {
+#ifdef _WIN32
+    return plat_is_dir(path);
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode);
+#endif
+}
+
+/* Like plat_is_file but does NOT follow symlinks (uses lstat). */
+static int plat_lstat_is_file(const char *path) {
+#ifdef _WIN32
+    return plat_is_file(path);
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
     return S_ISREG(st.st_mode);
 #endif
 }
@@ -370,6 +399,200 @@ static int plat_cpu_count(void) {
 #else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
+#endif
+}
+
+/* ── TTY detection ──────────────────────────────────────────────────── */
+
+static int plat_is_stdin_tty(void) {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin));
+#else
+    return isatty(STDIN_FILENO);
+#endif
+}
+
+/* ── Path length check ──────────────────────────────────────────────── */
+
+/* Returns 1 if the path (or any component during construction) would
+   exceed PATH_MAX_LEN, 0 otherwise. */
+static int plat_path_too_long(const char *path) {
+    return (int)strlen(path) >= PATH_MAX_LEN - 1;
+}
+
+/* ── Timestamp preservation ────────────────────────────────────────── */
+
+static int plat_preserve_timestamps(const char *src, const char *dst) {
+#ifdef _WIN32
+    HANDLE hSrc = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hSrc == INVALID_HANDLE_VALUE) return -1;
+    HANDLE hDst = CreateFileA(dst, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hDst == INVALID_HANDLE_VALUE) { CloseHandle(hSrc); return -1; }
+    FILETIME ftCreation, ftLastAccess, ftLastWrite;
+    if (!GetFileTime(hSrc, &ftCreation, &ftLastAccess, &ftLastWrite)) {
+        CloseHandle(hSrc); CloseHandle(hDst);
+        return -1;
+    }
+    int ok = SetFileTime(hDst, &ftCreation, &ftLastAccess, &ftLastWrite);
+    CloseHandle(hSrc); CloseHandle(hDst);
+    return ok ? 0 : -1;
+#else
+    struct stat st;
+    if (stat(src, &st) != 0) return -1;
+    struct timespec times[2];
+    times[0] = st.st_atim;   /* atime */
+    times[1] = st.st_mtim;   /* mtime */
+    return utimensat(AT_FDCWD, dst, times, 0);
+#endif
+}
+
+/* ── File comparison ───────────────────────────────────────────────── */
+
+/* Returns 1 if src is newer than dst, or if dst does not exist.
+   Returns 0 if dst exists and is newer than (or equal to) src. */
+static int plat_file_newer(const char *src, const char *dst) {
+#ifdef _WIN32
+    plat_stat_t st_src, st_dst;
+    if (plat_stat(src, &st_src) != 0) return 0;
+    if (plat_stat(dst, &st_dst) != 0) return 1;
+    return st_src.st_mtime > st_dst.st_mtime;
+#else
+    struct stat st_src, st_dst;
+    if (stat(src, &st_src) != 0) return 0;
+    if (stat(dst, &st_dst) != 0) return 1;
+    return st_src.st_mtime > st_dst.st_mtime;
+#endif
+}
+
+/* ── Hard links ─────────────────────────────────────────────────────── */
+
+static int plat_make_hardlink(const char *src, const char *dst) {
+#ifdef _WIN32
+    return CreateHardLinkA(dst, src, NULL) ? 0 : -1;
+#else
+    return link(src, dst);
+#endif
+}
+
+/* ── Symbolic links ─────────────────────────────────────────────────── */
+
+static int plat_make_symlink(const char *src, const char *dst) {
+#ifdef _WIN32
+    return CreateSymbolicLinkA(dst, src, 0) ? 0 : -1;
+#else
+    return symlink(src, dst);
+#endif
+}
+
+static int plat_is_symlink(const char *path) {
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    return (attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
+    return S_ISLNK(st.st_mode);
+#endif
+}
+
+static int plat_read_symlink_target(const char *path, char *buf, size_t len) {
+#ifdef _WIN32
+    /* Windows: resolve via GetFinalPathNameByHandle or skip */
+    return -1;
+#else
+    ssize_t n = readlink(path, buf, len - 1);
+    if (n < 0) return -1;
+    buf[n] = '\0';
+    return 0;
+#endif
+}
+
+/* ── Make writable (for force removal) ──────────────────────────────── */
+
+static void plat_make_writable(const char *path) {
+#ifdef _WIN32
+    SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+#else
+    chmod(path, 0666);
+#endif
+}
+
+/* ── Reflink copy (copy-on-write) ───────────────────────────────────── */
+
+/* Tries a reflink (copy-on-write) copy.
+   Returns 0 on success, -1 if not supported or on error. */
+static int plat_copy_file_reflink(const char *src, const char *dst) {
+#if defined(__linux__)
+    int fd_in = open(src, O_RDONLY);
+    if (fd_in < 0) return -1;
+    int fd_out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd_out < 0) { close(fd_in); return -1; }
+    int ret = ioctl(fd_out, FICLONE, fd_in);
+    close(fd_in);
+    close(fd_out);
+    return ret == 0 ? 0 : -1;
+#elif defined(__APPLE__)
+    /* clonefile is available on macOS 10.12+ */
+    return clonefile(src, dst, 0) == 0 ? 0 : -1;
+#else
+    (void)src; (void)dst;
+    return -1;
+#endif
+}
+
+/* ── Sparse-aware copy ──────────────────────────────────────────────── */
+
+/* Copies a file while preserving sparse regions (holes).
+   Returns 0 on success, -1 on error. */
+static int plat_copy_file_sparse(const char *src, const char *dst) {
+#if defined(__linux__)
+    int fd_in  = open(src, O_RDONLY);
+    if (fd_in < 0) return -1;
+    int fd_out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd_out < 0) { close(fd_in); return -1; }
+
+    struct stat st;
+    if (fstat(fd_in, &st) == 0) {
+        fchmod(fd_out, st.st_mode & 07777);
+
+        if (S_ISREG(st.st_mode)) {
+            off_t off = 0;
+            ssize_t copied;
+            while ((copied = copy_file_range(fd_in, &off, fd_out, &off,
+                                             st.st_size - off, 0)) > 0)
+                ;
+            if (copied < 0) {
+                /* Fallback to regular copy */
+                close(fd_in); close(fd_out);
+                return plat_copy_file(src, dst);
+            }
+        }
+        close(fd_in); close(fd_out);
+        return 0;
+    }
+    close(fd_in); close(fd_out);
+    return -1;
+#else
+    /* On non-Linux, fall back to regular copy */
+    return plat_copy_file(src, dst);
+#endif
+}
+
+/* ── Read-only file removal ─────────────────────────────────────────── */
+
+static int plat_remove_readonly(const char *path) {
+    /* On Unix, unlinking works regardless of file permission
+       if the directory is writable. On Windows, read-only attribute
+       blocks deletion, so clear it first. */
+#ifdef _WIN32
+    SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+    return DeleteFileA(path) ? 0 : -1;
+#else
+    plat_make_writable(path);
+    return unlink(path);
 #endif
 }
 

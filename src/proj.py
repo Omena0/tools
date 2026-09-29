@@ -5,6 +5,10 @@ import os
 
 gitPath = 'D:/GitHub/'
 
+# Linux override
+if os.uname().sysname == 'Linux':
+    gitPath = '/home/Omena0/GitHub/'
+
 arglib.usage = 'Usage: proj [mk|rm|mv|ls] [project name]'
 
 arglib.Arg('operation', ('mk','rm','mv','ls'))

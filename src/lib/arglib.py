@@ -6,12 +6,12 @@ usage = ''
 
 _args = []
 
-class ArgMatch: str|tuple[str]
+type ArgMatch = tuple[str]
 
 class ParseResult: dict[str,str]
 
 class Arg:
-    def __init__(self,name:str|ArgMatch, match:ArgMatch=None):
+    def __init__(self,name: str | ArgMatch, match: ArgMatch | None=None):
         """Create a new argument.
 
         ### Match types:
@@ -39,6 +39,7 @@ class Arg:
         """
 
         match = match or name
+
         self.name = name
         self.match = match
         self.value = None
